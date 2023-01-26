@@ -499,7 +499,7 @@ func (a *AuthTester) Test(ctx context.Context, assertRoute map[string]RouteCheck
 				_ = resp.Body.Close()
 
 				if !routeAssertions.NoAuthorize {
-					assert.NotNil(t, a.authorizer.Called, "authorizer expected")
+					assert.NotNil(t, a.authorizer.LastCall(), "authorizer expected")
 					if routeAssertions.StatusCode != 0 {
 						assert.Equal(t, routeAssertions.StatusCode, resp.StatusCode, "expect unauthorized")
 					} else {
@@ -508,22 +508,22 @@ func (a *AuthTester) Test(ctx context.Context, assertRoute map[string]RouteCheck
 							assert.Equal(t, http.StatusForbidden, resp.StatusCode, "expect unauthorized")
 						}
 					}
-					if a.authorizer.Called != nil {
+					if called := a.authorizer.LastCall(); called != nil {
 						if routeAssertions.AssertAction != "" {
-							assert.Equal(t, routeAssertions.AssertAction, a.authorizer.Called.Action, "resource action")
+							assert.Equal(t, routeAssertions.AssertAction, called.Action, "resource action")
 						}
 						if routeAssertions.AssertObject.Type != "" {
-							assert.Equal(t, routeAssertions.AssertObject.Type, a.authorizer.Called.Object.Type, "resource type")
+							assert.Equal(t, routeAssertions.AssertObject.Type, called.Object.Type, "resource type")
 						}
 						if routeAssertions.AssertObject.Owner != "" {
-							assert.Equal(t, routeAssertions.AssertObject.Owner, a.authorizer.Called.Object.Owner, "resource owner")
+							assert.Equal(t, routeAssertions.AssertObject.Owner, called.Object.Owner, "resource owner")
 						}
 						if routeAssertions.AssertObject.OrgID != "" {
-							assert.Equal(t, routeAssertions.AssertObject.OrgID, a.authorizer.Called.Object.OrgID, "resource org")
+							assert.Equal(t, routeAssertions.AssertObject.OrgID, called.Object.OrgID, "resource org")
 						}
 					}
 				} else {
-					assert.Nil(t, a.authorizer.Called, "authorize not expected")
+					assert.Nil(t, a.authorizer.LastCall(), "authorize not expected")
 				}
 			})
 			return nil
@@ -533,20 +533,77 @@ func (a *AuthTester) Test(ctx context.Context, assertRoute map[string]RouteCheck
 }
 
 type authCall struct {
-	SubjectID string
-	Roles     rbac.ExpandableRoles
-	Groups    []string
-	Scope     rbac.ScopeName
-	Action    rbac.Action
-	Object    rbac.Object
+	Actor  rbac.Subject
+	Action rbac.Action
+	Object rbac.Object
+
+	asserted bool
 }
 
 type RecordingAuthorizer struct {
-	Called       *authCall
+	Called       []authCall
 	AlwaysReturn error
 }
 
 var _ rbac.Authorizer = (*RecordingAuthorizer)(nil)
+
+type ActionObjectPair struct {
+	Action rbac.Action
+	Object rbac.Object
+}
+
+// Pair is on the RecordingAuthorizer to be easy to find and keep the pkg
+// interface smaller.
+func (r *RecordingAuthorizer) Pair(action rbac.Action, object rbac.Objecter) ActionObjectPair {
+	return ActionObjectPair{
+		Action: action,
+		Object: object.RBACObject(),
+	}
+}
+
+func (r *RecordingAuthorizer) AllAsserted() error {
+	missed := 0
+	for _, c := range r.Called {
+		if !c.asserted {
+			missed++
+		}
+	}
+
+	if missed > 0 {
+		return xerrors.Errorf("missed %d calls", missed)
+	}
+	return nil
+}
+
+// AssertActor asserts in order.
+func (r *RecordingAuthorizer) AssertActor(t *testing.T, actor rbac.Subject, did ...ActionObjectPair) {
+	ptr := 0
+	for i, call := range r.Called {
+		if ptr == len(did) {
+			// Finished all assertions
+			return
+		}
+		if call.Actor.SubjectID == actor.SubjectID {
+			//action, object := did[ptr], on[ptr]
+			action, object := did[ptr].Action, did[ptr].Object
+			assert.Equalf(t, action, call.Action, "assert action %d", ptr)
+			assert.Equalf(t, object, call.Object, "assert object %d", ptr)
+			r.Called[i].asserted = true
+			ptr++
+		}
+	}
+
+	assert.Equalf(t, len(did), ptr, "assert actor: didn't find all actions, %d missing actions", len(did)-ptr)
+}
+
+// LastCall is implemented to support legacy tests.
+// Deprecated
+func (r *RecordingAuthorizer) LastCall() *authCall {
+	if len(r.Called) == 0 {
+		return nil
+	}
+	return &r.Called[len(r.Called)-1]
+}
 
 // ByRoleNameSQL does not record the call. This matches the postgres behavior
 // of not calling Authorize()
@@ -555,14 +612,16 @@ func (r *RecordingAuthorizer) ByRoleNameSQL(_ context.Context, _ string, _ rbac.
 }
 
 func (r *RecordingAuthorizer) ByRoleName(_ context.Context, subjectID string, roleNames rbac.ExpandableRoles, scope rbac.ScopeName, groups []string, action rbac.Action, object rbac.Object) error {
-	r.Called = &authCall{
-		SubjectID: subjectID,
-		Roles:     roleNames,
-		Groups:    groups,
-		Scope:     scope,
-		Action:    action,
-		Object:    object,
-	}
+	r.Called = append(r.Called, authCall{
+		Actor: rbac.Subject{
+			SubjectID: subjectID,
+			Roles:     roleNames,
+			Groups:    groups,
+			Scope:     scope,
+		},
+		Action: action,
+		Object: object,
+	})
 	return r.AlwaysReturn
 }
 
@@ -579,7 +638,7 @@ func (r *RecordingAuthorizer) PrepareByRoleName(_ context.Context, subjectID str
 }
 
 func (r *RecordingAuthorizer) reset() {
-	r.Called = nil
+	r.Called = []authCall{}
 }
 
 type fakePreparedAuthorizer struct {

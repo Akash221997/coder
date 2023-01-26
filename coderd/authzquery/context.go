@@ -14,34 +14,29 @@ import (
 
 type authContextKey struct{}
 
-// actor is the authorization subject for a request.
-// This is **required** for all AuthzQuerier operations.
-type actor struct {
-	ID     uuid.UUID
-	Roles  rbac.ExpandableRoles
-	Scope  rbac.ScopeName
-	Groups []string
-}
-
 func WithAuthorizeSystemContext(ctx context.Context, roles rbac.ExpandableRoles) context.Context {
 	// TODO: Add protections to search for user roles. If user roles are found,
 	// this should panic. That is a developer error that should be caught
 	// in unit tests.
-	return context.WithValue(ctx, authContextKey{}, actor{
-		ID:     uuid.Nil,
-		Roles:  roles,
-		Scope:  rbac.ScopeAll,
-		Groups: []string{},
+	return context.WithValue(ctx, authContextKey{}, rbac.Subject{
+		SubjectID: uuid.Nil.String(),
+		Roles:     roles,
+		Scope:     rbac.ScopeAll,
+		Groups:    []string{},
 	})
 }
 
 func WithAuthorizeContext(ctx context.Context, actorID uuid.UUID, roles rbac.ExpandableRoles, groups []string, scope rbac.ScopeName) context.Context {
-	return context.WithValue(ctx, authContextKey{}, actor{
-		ID:     actorID,
-		Roles:  roles,
-		Scope:  scope,
-		Groups: groups,
+	return context.WithValue(ctx, authContextKey{}, rbac.Subject{
+		SubjectID: actorID.String(),
+		Roles:     roles,
+		Scope:     scope,
+		Groups:    groups,
 	})
+}
+
+func WithAuthorizeSubjectContext(ctx context.Context, subject rbac.Subject) context.Context {
+	return context.WithValue(ctx, authContextKey{}, subject)
 }
 
 // WithWorkspaceAgentTokenContext returns a context with a workspace agent token
@@ -55,9 +50,9 @@ func WithAuthorizeContext(ctx context.Context, actorID uuid.UUID, roles rbac.Exp
 func WithWorkspaceAgentTokenContext(ctx context.Context, workspaceID uuid.UUID, actorID uuid.UUID, roles rbac.ExpandableRoles, groups []string) context.Context {
 	// TODO: This workspace ID should be applied in the scope.
 	var _ = workspaceID
-	return context.WithValue(ctx, authContextKey{}, actor{
-		ID:    actorID,
-		Roles: roles,
+	return context.WithValue(ctx, authContextKey{}, rbac.Subject{
+		SubjectID: actorID.String(),
+		Roles:     roles,
 		// TODO: @emyrk This scope is INCORRECT. The correct scope is a readonly
 		// scope for the specified workspaceID. Limit the permissions as much as
 		// possible. This is a temporary scope until the scope allow_list
@@ -70,7 +65,7 @@ func WithWorkspaceAgentTokenContext(ctx context.Context, workspaceID uuid.UUID, 
 // actorFromContext returns the authorization subject from the context.
 // All authentication flows should set the authorization subject in the context.
 // If no actor is present, the function returns false.
-func actorFromContext(ctx context.Context) (actor, bool) {
-	a, ok := ctx.Value(authContextKey{}).(actor)
+func actorFromContext(ctx context.Context) (rbac.Subject, bool) {
+	a, ok := ctx.Value(authContextKey{}).(rbac.Subject)
 	return a, ok
 }
