@@ -81,7 +81,7 @@ RUN curl -L -o protoc.zip https://github.com/protocolbuffers/protobuf/releases/d
 RUN unzip protoc.zip
 
 # Ubuntu 20.04 LTS (Focal Fossa)
-FROM ubuntu:focal
+FROM ubuntu:20.04
 
 SHELL ["/bin/bash", "-c"]
 
